@@ -1,0 +1,342 @@
+openapi: 3.1.0
+info:
+  title: AI Task Manager API
+  version: 1.0.0
+  description: |
+    REST API for an in-memory task manager plus a grounded, tool-using AI assistant.
+
+    **Conventions**
+    - Success bodies: `{ "data": ... }` (lists add `meta`). Error bodies: `{ "error": { code, message, details?, requestId } }`.
+    - Every response carries `X-Request-Id` (send your own to correlate logs).
+    - `POST` endpoints accept an optional `Idempotency-Key` header (8-255 chars). Retrying with the same key and body
+      replays the original response (`Idempotent-Replayed: true`) instead of executing twice; the same key with a
+      different body returns `422 IDEMPOTENCY_KEY_REUSED`.
+servers:
+  - url: http://localhost:4000
+    description: Local development
+tags:
+  - name: Tasks
+  - name: Assistant
+  - name: System
+
+paths:
+  /api/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks
+      description: Filter, search, sort and paginate. Multiple statuses/priorities may be comma-separated.
+      parameters:
+        - { name: status, in: query, schema: { type: string, example: 'pending,in_progress' }, description: 'pending | in_progress | completed (comma-separated)' }
+        - { name: priority, in: query, schema: { type: string, example: high }, description: 'low | medium | high (comma-separated)' }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 }, description: Case-insensitive search over title and description; every word must match }
+        - { name: createdBy, in: query, schema: { type: string, enum: [user, assistant] } }
+        - { name: dueBefore, in: query, schema: { type: string, format: date }, description: Inclusive; only tasks with a due date }
+        - { name: dueAfter, in: query, schema: { type: string, format: date }, description: Inclusive; only tasks with a due date }
+        - { name: sortBy, in: query, schema: { type: string, enum: [createdAt, updatedAt, dueDate, priority, title], default: createdAt } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: A page of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Task' } }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTask' }
+            example: { title: Fix login redirect loop, description: Safari users bounce between /login and /dashboard., priority: high, dueDate: '2026-11-28' }
+      responses:
+        '201':
+          description: Created (or replayed when the Idempotency-Key was already used with the same body)
+          headers:
+            Idempotent-Replayed: { schema: { type: string, enum: ['true'] }, description: Present when the response is a replay }
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/Task' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '422': { $ref: '#/components/responses/IdempotencyKeyReused' }
+
+  /api/tasks/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      summary: Get one task
+      responses:
+        '200':
+          description: The task
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/Task' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Tasks]
+      summary: Update a task
+      description: Partial update — send any subset of editable fields (at least one). Unknown fields are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateTask' }
+            example: { status: in_progress, dueDate: null }
+      responses:
+        '200':
+          description: The updated task
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { $ref: '#/components/schemas/Task' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Tasks]
+      summary: Delete a task
+      responses:
+        '200':
+          description: The deleted task
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+                  message: { type: string, example: Task 3 deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/assistant/chat:
+    post:
+      tags: [Assistant]
+      summary: Chat with the task assistant
+      description: |
+        For every message the assistant decides whether to search the knowledge base, call task tools, both, or neither.
+        The response contains the answer **and the evidence used**.
+
+        **Deleting** never happens in the first request: the response has `needsConfirmation` with a `pendingActionId`.
+        Send a second request `{ "confirm": true, "pendingActionId": "..." }` to execute it (or `confirm: false` to cancel).
+        Confirmations are single-use, expire after 5 minutes and are refused if the task changed in between.
+
+        Status codes: `200` answered (including degraded answers), `400` invalid request / empty message,
+        `409` confirmation invalid, expired or stale, `422` idempotency key reused, `429` rate limited,
+        `503` AI service unavailable or not configured (nothing was changed).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: X-Simulate-Tool-Failure
+          in: header
+          required: false
+          schema: { type: string, enum: ['true', 'false'] }
+          description: Dev/test only (ignored in production) — makes every task tool fail, like FORCE_TOOL_FAILURE=true.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+            examples:
+              question: { value: { message: What is the difference between medium and high priority?, confirm: false, pendingActionId: null } }
+              confirm: { value: { message: '', confirm: true, pendingActionId: 3f0c2a8e-5b1d-4c8e-9a51-0f6f1c2d7e44 } }
+      responses:
+        '200': { description: Answer, content: { application/json: { schema: { $ref: '#/components/schemas/ChatResponse' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { description: Confirmation not found / expired / task changed, content: { application/json: { schema: { $ref: '#/components/schemas/ChatResponse' } } } }
+        '422': { $ref: '#/components/responses/IdempotencyKeyReused' }
+        '429': { description: Rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AI service unavailable — honest answer, no changes, content: { application/json: { schema: { $ref: '#/components/schemas/ChatResponse' } } } }
+
+  /api/assistant/chat/stream:
+    post:
+      tags: [Assistant]
+      summary: Chat with streaming progress (Server-Sent Events)
+      description: |
+        Same request body and semantics as `/api/assistant/chat`, delivered as `text/event-stream`.
+        Progress events: `status`, `kb_search`, `tool_start`, `tool_end`, `text_delta`, `text_reset`.
+        The stream always ends with `done` (`{ status, replayed, body: ChatResponse }`) or `error` (`{ status, error }`).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+      responses:
+        '200': { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /api/health:
+    get:
+      tags: [System]
+      summary: Liveness and assistant configuration
+      responses:
+        '200': { description: OK }
+  /api/metrics:
+    get:
+      tags: [System]
+      summary: In-process counters and latency percentiles (routes, tool errors, retrieval misses, grounding warnings)
+      responses:
+        '200': { description: OK }
+
+components:
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, minLength: 8, maxLength: 255, pattern: '^[A-Za-z0-9_\-:.]+$' }
+      description: Unique per logical request; reuse it when retrying.
+
+  responses:
+    ValidationError:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Invalid task
+              details: [{ field: title, message: Title must be at least 3 characters }]
+              requestId: 6f1f6c3e-0c1a-4f7e-9d0f-2b6d1b8e3a11
+    NotFound:
+      description: Task not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: TASK_NOT_FOUND, message: Task 9999 was not found, requestId: 0b5e... } }
+    IdempotencyKeyReused:
+      description: The Idempotency-Key was already used with a different body
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Task:
+      type: object
+      required: [id, title, description, status, priority, dueDate, createdAt, updatedAt, createdBy]
+      properties:
+        id: { type: integer, example: 3 }
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+        status: { type: string, enum: [pending, in_progress, completed] }
+        priority: { type: string, enum: [low, medium, high] }
+        dueDate: { type: [string, 'null'], format: date }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        createdBy: { type: string, enum: [user, assistant] }
+    CreateTask:
+      type: object
+      additionalProperties: false
+      required: [title, description]
+      properties:
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+        status: { type: string, enum: [pending, in_progress, completed], default: pending }
+        priority: { type: string, enum: [low, medium, high], default: medium }
+        dueDate: { type: [string, 'null'], format: date, description: Must not be in the past }
+    UpdateTask:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+        status: { type: string, enum: [pending, in_progress, completed] }
+        priority: { type: string, enum: [low, medium, high] }
+        dueDate: { type: [string, 'null'], format: date }
+    PageMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+        totalPages: { type: integer }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: array, items: { type: object, properties: { field: { type: string }, message: { type: string } } } }
+            requestId: { type: string }
+    ChatRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        message: { type: string, maxLength: 2000, description: Required unless confirming/cancelling a pending action }
+        confirm: { type: boolean, default: false }
+        pendingActionId: { type: [string, 'null'], format: uuid, default: null }
+        conversationId: { type: [string, 'null'], format: uuid, description: Returned by the previous response; enables follow-ups }
+    ChatResponse:
+      type: object
+      required: [answer, route, evidence, toolCalls, needsConfirmation, conversationId, meta]
+      properties:
+        answer: { type: string }
+        route: { type: string, enum: [kb, tool, both, none], description: Computed from what actually ran }
+        evidence:
+          type: array
+          description: Knowledge-base passages the answer is grounded on (all above the relevance threshold)
+          items:
+            type: object
+            properties:
+              id: { type: string, example: 'priority-levels#medium-versus-high' }
+              docId: { type: string }
+              title: { type: string }
+              section: { type: string }
+              score: { type: number, example: 0.547 }
+              snippet: { type: string }
+        toolCalls:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string, enum: [list_tasks, get_task, create_task, update_task, delete_task] }
+              arguments: { type: object }
+              status: { type: string, enum: [success, error, pending_confirmation, cancelled] }
+              result: { type: object }
+              error: { type: object, properties: { code: { type: string }, message: { type: string }, details: { type: array, items: { type: object } } } }
+              durationMs: { type: integer }
+              deduplicated: { type: boolean }
+        needsConfirmation:
+          type: [object, 'null']
+          properties:
+            pendingActionId: { type: string, format: uuid }
+            action: { type: string, enum: [delete_task] }
+            taskId: { type: integer }
+            taskTitle: { type: string }
+            summary: { type: string }
+            expiresAt: { type: string, format: date-time }
+        conversationId: { type: string, format: uuid }
+        meta:
+          type: object
+          properties:
+            requestId: { type: string }
+            model: { type: [string, 'null'] }
+            latencyMs: { type: integer }
+            llmCalls: { type: integer }
+            usage: { type: object, properties: { inputTokens: { type: integer }, outputTokens: { type: integer } } }
+            retrieval:
+              type: array
+              description: Every knowledge-base search with passed and rejected scores (threshold transparency)
+              items: { type: object }
+            groundingWarnings: { type: array, items: { type: string } }
+            degraded: { type: boolean }
+            tasksChanged: { type: boolean }
+        error: { type: object, properties: { code: { type: string }, message: { type: string } } }

@@ -19,6 +19,7 @@
     "eval": "npm run eval -w backend"
   },
   "devDependencies": {
-    "concurrently": "^10.0.7"
+    "concurrently": "^10.0.7",
+    "playwright": "^1.65.1"
   }
 }

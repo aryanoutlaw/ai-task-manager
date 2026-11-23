@@ -1,0 +1,24 @@
+{
+  "name": "ai-task-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full-stack task manager with a grounded, tool-using Claude assistant",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev -w backend\" \"npm:dev -w frontend\"",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "start": "concurrently -k -n api,web -c blue,magenta \"npm:start -w backend\" \"npm:preview -w frontend\"",
+    "test": "npm test -w backend && npm test -w frontend",
+    "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend",
+    "eval": "npm run eval -w backend"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
+  }
+}

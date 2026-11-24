@@ -75,7 +75,7 @@ export default function App() {
         {/* Single assistant instance: sidebar on desktop, full-screen sheet on mobile. */}
         <aside
           className={cn(
-            'z-30 min-h-0 border-zinc-200/80 lg:static lg:flex lg:w-[420px] lg:border-l xl:w-[460px] dark:border-zinc-800',
+            'z-30 min-h-0 border-zinc-200/80 bg-zinc-50 lg:static dark:bg-zinc-950 lg:flex lg:w-[420px] lg:border-l xl:w-[460px] dark:border-zinc-800',
             assistantOpen ? 'fixed inset-0 flex animate-slide-up' : 'hidden',
           )}
         >

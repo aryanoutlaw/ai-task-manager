@@ -38,7 +38,7 @@ export function AssistantPanel({ onTasksChanged, onOpenTask, onClose, className 
         : { label: assistant.model ?? 'Online', dot: 'bg-emerald-500' };
 
   return (
-    <section className={cn('flex h-full min-h-0 flex-col bg-zinc-50/80 dark:bg-zinc-950', className)} aria-label="AI assistant">
+    <section className={cn('flex h-full min-h-0 flex-col bg-zinc-50 dark:bg-zinc-950', className)} aria-label="AI assistant">
       <header className="flex items-center gap-3 border-b border-zinc-200/80 bg-white/80 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/80">
         <div className="flex size-8 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 to-violet-500 text-white shadow-sm">
           <Sparkles className="size-4" />

@@ -97,13 +97,15 @@ export class AssistantAgent {
     const turn = new TurnState();
 
     const respond = (status: number, partial: Partial<ChatResponse> & Pick<ChatResponse, 'answer'>, extra: { llmCalls?: number; usage?: ChatResponse['meta']['usage']; degraded?: boolean; groundingWarnings?: string[] } = {}): StoredResponse => {
+      const { answer, ...rest } = partial;
       const body: ChatResponse = {
+        answer, // first, for readable payloads
         route: 'none',
         evidence: [],
         toolCalls: turn.toolCalls,
         needsConfirmation: null,
         conversationId,
-        ...partial,
+        ...rest,
         meta: {
           requestId: options.requestId,
           model: this.deps.llm?.model ?? null,

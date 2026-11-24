@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "eval": "tsx scripts/eval.ts",
-    "kb:calibrate": "tsx scripts/calibrate-threshold.ts"
+    "kb:calibrate": "tsx scripts/calibrate-threshold.ts",
+    "demo:offline": "tsx scripts/demo-server.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0",
